@@ -1,0 +1,197 @@
+---
+title: "PRACTICAL MACHINE LEARNING PROJECT "
+
+---
+
+#### April 2015
+
+Given input training sample on physical excercises measured by accelerometers
+(ref. paper: http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf )
+predict the manner in which they did the exercise as explained by the variable "classe" in the training dataset.
+[Done using  RStudio Version 0.98.1091, R3.1.1, under Linux Mint 17.1 rebecca]
+
+
+First, we get the files in the right environment and take a look at the data, noting that as Rstudio is limited to 100 columns, in order to look at these, we may use the View utils (however, this has no browsing features)
+
+```{r}
+if(!file.exists("./DATA")){dir.create("./DATA")}  # project OUTPUT data location, for working and submitting
+setwd("./DATA")
+
+# read data; train
+Train<-read.csv("pml-training.csv", header = TRUE, sep = ",", quote = "\"",  dec = ".", fill = TRUE, comment.char = "")
+# have a look: note Rstudio truncates at 100 vars, here we have 160, so str, head and tail will be incomplete
+utils::View(Train)  # a bit unhandy, had a look with OO Calc, but not handy windows (no way to scroll)
+# Train[1:10,100:160] # other way to visualize the variables beyond 100
+
+# read data; test, just to check that the structure is the same
+Test<-read.csv("pml-testing.csv", header = TRUE, sep = ",", quote = "\"",  dec = ".", fill = TRUE, comment.char = "")
+# have a look
+utils::View(Test)  # a bit unhandy, had a look with OO Calc, but not handy windows (no way to scroll)
+# Test[1:10,100:160]  # other way to visualize the variables beyond 100
+```
+
+Thereafter, we proceed with cleaning of the data and learning steps.
+
+#### 1. Basic cleaning
+
+There are lots of NA: we have columns with one or two values among thousands of NA's. We could eliminate these by either A) merging the two sets, clean and re-split, or B) identifying (list) all the columns removed on one file and then repeat on the other file.
+
+```{r}
+# so first count NA'S IN COLUMNS in Train
+invisible(colSums(is.na(Train))) # says no column has ALL NA's (We don't show this print with 'invisible)
+# and in Test
+invisible(colSums(is.na(Test))) # Some have ALL NA's (We don't show this print with 'invisible)
+# test<-Test[ , colSums(is.na(Test)) == 0] # reduced to 60 variables
+
+# looking at Test we find anually the columns we wish to retain:
+# first 11, then 37:49 and 60:68, 84:86, 102, 113:124, 140, 151:160
+colsToget<-c(1:11, 37:49, 60:68, 102, 113:124, 140, 151:160)
+Test<-Test[,colsToget] 
+# we select the same columns from Train 
+Train<-Train[,colsToget] 
+
+# now we check the cleanliness visualizing holes with the Amelia package
+invisible(library(Amelia)) # (We don't show this print with 'invisible)
+missmap(Train, main = "Missingness Map Train", rank.order = FALSE) # some observations are NA, do not RANK per missing 
+missmap(Test, main = "Missingness Map Test")  # no NA's
+
+### clean other NA's from train as shown from missmap: following two commands do not work
+train<-Train[complete.cases(Train),]
+
+# Basic stats
+invisible(summary(train))
+```
+
+As the data appear now reasonably clean, we proceed with the Learning steps
+
+#### 2.the ML Steps
+
+2.1. Partition data set into training & testing
+NB: we use the train as the 'given' dataset, and divide it into training and testing, whereas the original Test is used to answer the questions in the assignment, as if each of the 20 cases was an incoming new data point, aginst which we run the prediction
+
+```{r}
+library(caret); library(randomForest)
+
+inTrain<-createDataPartition(y=Train$classe, p=0.7,list=FALSE) # split on type, 75 to train, rest to test
+training<-train[inTrain,]
+testing<-train[-inTrain,] # - means, the remaining
+dim(training); dim(testing);  # show observations and variables
+```
+
+We could do some preprocessing here, mainly lookig at the cvariables, find covariates and doing some correlation analysis, but 1) there is not much time for thi; 2) moreover, Random Forest (RF) as algorithm has the advantage that it will be less influenced by potential correlations between the predictors. First, we leave out some inessential variables
+
+```{r}
+# leave out the X, just an index, and the two timestamps as they do not appear to influence performance
+training<-subset(training,select=-c(X, raw_timestamp_part_1,raw_timestamp_part_2, cvtd_timestamp)) # leaves 53 variables
+# do it on the testimg as well
+testing<-subset(testing,select=-c(X, raw_timestamp_part_1,raw_timestamp_part_2, cvtd_timestamp)) # leaves 53 variables
+
+```
+Then we apply the learning algorithm
+
+##### 2.2. Random Forest first run
+We can use caret and random forest in different ways. From the randomForest library we use first brute force on all variables with 1000 trees and get the variable importance, importance=TRUE, whereas the  ntree argument specifies how many trees we want to grow.
+
+```{r}
+# set seed to be repeatable
+set.seed(415)
+library(caret); library(randomForest)
+# fit <- randomForest(classe ~., data=training, importance=TRUE, ntree=1000)
+
+# first look at general output
+# names(fit)
+# plot(fit)
+# varImpPlot(fit) # plot variable importance in terms of accuracy and Gini index
+```
+[Note in the code above, for speed of compilation purposes we comment the fit with 1000 trees and leave the one below with the reduced nuber of trees, see coment below ]
+
+We find discontinuities in the accuracy plot at about 55 (first 8 variables) corresponding to the Gini index of ~400
+with the same variables; and then at ~45, where there are some rankng differences between the two indexes. 
+From the plot of the fit, we see that the errors (black curve is the OOB) drops considerably when ntree>=150, so we reduce these, by repeating the training with reduced number of trees. Closer inspection by iteration shows ntree=70 should suffice and shortens the execution tie considerably.
+A shorter run:
+
+##### 2.3. Random Forest further run
+```{r}
+fit <- randomForest(classe ~., data=training, importance=TRUE, ntree=70)
+# we use RF to predict our classification  in classe; importance=TRUE  allows to inspect variable importance 
+
+# output
+names(fit) # just to recall name of the output fieds
+plot(fit) #  shows the classes error and the OOB (out of sample error curve, in black)
+title(main = NULL, sub="Error versus number of trees ")
+varImpPlot(fit) # variable importance in terms of accuracy and Gini index, practially identical to fit with 2000 trees.
+title(main = "Variable importance - Accuracy and Gini ")
+```
+
+We printed the error as a function of the number of trees. In this second run we see that indeed 70 trees are more than enough. Given the satisfactory magnitude of the error we use the model to predict the class values for the testing dataset
+
+##### 2.4. Predictions on the testing data and accuracy
+
+```{r}
+predictions<-predict(fit,newdata=testing)
+# predictions # have a look
+# look at the confusion matrix, passing predictions vs actual Classe of the testing
+confusionMatrix(predictions,testing$classe)
+```
+
+##### 2.5. Out of sample accuracy, also called OOB (Out Of Bag). 
+
+Now, in general, in random forests there is no need for cross-validation to get an estimate of the test set error,
+because the algorithm does this etimation internally (cf original ref. Random Forests, Leo Breiman and Adele Cutler). 
+So, as said by several in the posts to the course, if we have to gather some understanding of why we are doing what we're doing "performing cross-validation on a random forest model just to "check a box" on a grading rubric doesn't make sense", especially "when the theory suggests otherwise". 
+Still, the algorithm produces an output which can be interrogated to get the error: we can visualize the class errors with the fit confusion matrix, or if we wish, the error rate for each of the ntree=70 (here) trees, for each of the five classes (A to E):
+
+```{r}
+print(fit$confusion) # gives the confusion matrix with class error
+# print(fit$err.rate)  # or print the error on each
+```
+
+##### 2.6. apply to each of the 20 test cases in the testing data set
+
+Now there are a few problems to solve before we apply the model to each of the 20 data cases within the Test dataset. They have to do with the format  of the variables between the training (and testing) dataset and the Test dataset
+especially when dealing with predictions of factors which are not in the newdata and/or do not display the sae factor values. So we align the datasets with respect to soe discrepancies in the classes of the paraeters and in the factor levels.
+
+```{r}
+# leave out the X, just an index, and the two timestamps as they do not appear to influence performance
+Test<-subset(Test,select=-c(X, raw_timestamp_part_1,raw_timestamp_part_2, cvtd_timestamp)) # leaves 53 variables
+# note, last column is problem_id not classe
+names(Test)[53]<-"classe"
+# assign it a value (one of the factor values) to prevent NA
+Test$classe=as.factor(Test$classe) # and it is a factor in the training and testing, so convert it also in Test, but should give same number of levels
+Test$classe="A"
+# noted that three variables have different class between Test and Train (which was split into trainin and testing):
+invisible(sapply(training, class)) # avoid output print with "invisible"
+invisible(sapply(Test, class))  # avoid output print with "invisible"
+# so we change these in Test:
+Test$magnet_dumbbell_z=as.numeric(Test$magnet_dumbbell_z)
+Test$magnet_forearm_y=as.integer(Test$magnet_forearm_y)
+Test$magnet_forearm_z=as.integer(Test$magnet_forearm_z)
+
+# still discrepancies in the factor levels
+Test$classe=factor(Test$classe,levels=c("A","B","C","D","E"))
+levels(Test$classe) <- levels(training$classe)
+levels(Test$new_window) <- levels(training$new_window)
+
+```
+Now, to produce the individual prediction for each of the 20 probles id, we modify the algorithm in the course description by doing the prediction and the writing within a loop over the nuber of test cases:
+
+```{r}
+# produce and write the 20 one-character 20 files (predictions) for each problem 
+for (i in 1:nrow(Test))
+{     
+     predictions<-predict(fit,newdata=Test[i,])
+     filename = paste0("problem_id_",i,".txt")
+     write.table(predictions,file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+}
+ 
+
+```
+
+This concludes the problem assigned.
+
+#### Final Remarks
+
+Cross-validation was already comented within the main text.  
+There is an additional and quite important issue related to the structure and meaning of the original dataset (Train) as highlighted in one of the posts about the assignment ("How to interpret data in the Course Project dataset", started by Natalia Rodnova). Specifically, the way the time stamps are indicated, would suggest that an individual record (or row of the dataset), does NOT constitute a complete occurrence. The latter would be made of groups of rows, as identified by the num_window predictor, but the structure of the Test dataset, e.g. the problem posed, does not permit to deal with the issue correctly, so we content ourselves with the use of the 'fractional' reading, made by the individual rows ("The testing set should have consisted of the rows representing several "windows", and it wouldn't be 20 records, it would be hundreds. And the task should be to predict a class for the window, not for 1 row." as posted by the same person). I fully agree with this view and find the coents about the accuracy obtained by other poster, entirely off-target.
+
+
